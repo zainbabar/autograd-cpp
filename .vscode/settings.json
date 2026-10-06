@@ -1,0 +1,8 @@
+{
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "C_Cpp.autocomplete": "disabled",
+  "C_Cpp.errorSquiggles": "disabled",
+  "clangd.arguments": ["--background-index", "--clang-tidy", "--header-insertion=iwyu"],
+  "cmake.generator": "Ninja",
+  "cmake.configureOnOpen": true
+}
