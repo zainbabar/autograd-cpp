@@ -41,10 +41,6 @@ shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Valu
     return out;
 }
 
-// make it easier to create new shit, refactor this to have a wrapper class to make it cleaner
-using vp = shared_ptr<Value>;
-vp val(double x) { return make_shared<Value>(x); }
-
 shared_ptr<Value> operator+(const shared_ptr<Value>& self, double other) {
     return self + make_shared<Value>(other);
 }
@@ -155,52 +151,7 @@ double grad_check(function<shared_ptr<Value>(const shared_ptr<Value>&)> f, doubl
 // and child nodes keep their inputs alive for backward pass
 
 int main() {
-    // testing stuff hidden
-    /*
-    shared_ptr<Value> x = make_shared<Value>(2);
-    shared_ptr<Value> y = make_shared<Value>(3);
-    shared_ptr<Value> q = x + y;
-    shared_ptr<Value> f = q * x;
-    // sketched out:
-    // dfdq += 2 -> intermediate graident
-    // dqdx += 1 -> local derivative 
-    // dfdx += dfdq * dqdx = 2 * 1 = 2 -> current gradient, just passes on, local deriv is 1
-    // dqdy += 1 -> intermediate
-    // dfdy += dfdq * dqdy = 2 * 1 = 2 -> gradient, again just passes on since add
-    // now need to add more to x.grad since its used twice, add the 
-    // dfdx += 5 -> final gradient, (since q is 5) 
-    // so final gradients are x.grad = 7 (5 + 2), y.grad = 2
-
-    // test this out, manually call .backward on all see if it works
-    f->grad = 1;
-    f->backward();
-    q->backward();
-    cout << "x.grad: " << x->grad << ", y.grad: " << y->grad << endl;
-    */
-    // weights and biases
-    vp x1 = val(2);
-    vp x2 = val(0);
-    vp w1 = val(-3);
-    vp w2 = val(1);
-    vp b = val(6.8813735870195432);
-
-    vp x1w1 = x1 * w1;
-    vp x2w2 = x2 * w2;
-    vp dp = x1w1 + x2w2;
-    vp n = dp + b;
-    vp o = tanh(n);
-
-    // try out using automatic gradient calc now 
-    // visited set and ordering for build function
-    unordered_set<Value*> visited{};
-    vector<shared_ptr<Value>> order{};
-    build(o, visited, order);
-
-    backprop(o,order);
-
-    cout << x1->grad << " " << w1->grad << " " << x2->grad << " " << w2->grad << endl;
-
-    // function for testing, builds out the graph 
+   // function for testing, builds out the graph 
     auto f = [](const shared_ptr<Value>& x) {
         shared_ptr<Value> a = 2 * x;
         shared_ptr<Value> b = a + 1;
@@ -217,5 +168,4 @@ int main() {
 
     cout << "cubic  rel err: " << grad_check(cubic, 1.5) << endl;
     cout << "neuron rel err: " << grad_check(neuron, 1)  << endl;
-
 }

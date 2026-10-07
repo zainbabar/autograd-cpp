@@ -1,2 +1,2 @@
 # autograd engine
-wip
+wip, building out the core in [main.cpp](main.cpp), modules are coming soon...
