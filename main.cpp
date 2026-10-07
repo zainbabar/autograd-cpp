@@ -9,25 +9,29 @@
 using namespace std;
 
 
-// TODO: 
-// add subtraction, negation exp, pow 
+// TODO: add subtraction, negation, exp, pow
 
-// our ops for tracking backward pass
-enum class Op {NONE, ADD, MULT, TANH};
+// which op produced a node (NONE for leaves)
+enum class Op {NONE, ADD, MULT, DIV, TANH};
 
+// Every node lives on the heap behind a shared_ptr, so reusing a node in several ops means
+// they all point at the same object and its grad accumulates in one place.
+// Each node also holds shared_ptrs to its inputs, which keeps the whole graph alive
+// for the backward pass as long as the output is alive.
 class Value {
   public:
-    double data; // data
-    vector<shared_ptr<Value>> inputs;  // the inputs that led to this current node
-    double grad; // gradient
+    double data;
+    vector<shared_ptr<Value>> inputs;  // nodes this one was computed from (empty for leaves)
+    double grad;
     Op op;
-    function<void()> backward; // each nodes backward pushes its own grad to its own inputs
+    // pushes this node's grad down into its inputs' grads, set by whichever op created the node
+    function<void()> backward;
 
-    Value(   
-        double data, 
-        vector<shared_ptr<Value>> inputs=vector<shared_ptr<Value>>{}, // empty by def 
-        Op op=Op::NONE  // none by def
-    ): data{data}, inputs{inputs}, grad{0}, op{op}, backward([]{}) {} 
+    Value(
+        double data,
+        vector<shared_ptr<Value>> inputs=vector<shared_ptr<Value>>{},
+        Op op=Op::NONE
+    ): data{data}, inputs{inputs}, grad{0}, op{op}, backward([]{}) {}
 
 };
 shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Value>& other) {
@@ -36,9 +40,12 @@ shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Valu
         vector<shared_ptr<Value>>{self, other},
         Op::ADD
     );
-    // lambda, so when operation is done the corresponding backward def is set to calc gradients correctly
-    // hold ref to its inputs 
-    // local deriv * incoming gradient, update its inputs gradients
+    // The lambda captures a raw pointer to out, not a reference or a shared_ptr:
+    // - self/other/out are locals, so capturing by reference would dangle once this returns
+    // - a shared_ptr copy would make out own itself (ref cycle), so it would never be freed
+    // The lambda is stored inside *o, so o is always valid whenever it runs.
+    // d(a+b)/da = d(a+b)/db = 1, so each input just gets the incoming grad.
+    // += since a node can feed several outputs, its grad is the sum over all of them (also handles a + a)
     out->backward = [o = out.get()] {
         for (auto input : o->inputs) {
             input->grad += 1 * o->grad;
@@ -47,6 +54,7 @@ shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Valu
     return out;
 }
 
+// scalar overloads: wrap the double in a leaf Value and reuse the Value version
 shared_ptr<Value> operator+(const shared_ptr<Value>& self, double other) {
     return self + make_shared<Value>(other);
 }
@@ -61,14 +69,10 @@ shared_ptr<Value> operator*(const shared_ptr<Value>& self, const shared_ptr<Valu
         vector<shared_ptr<Value>>{self, other},
         Op::MULT
     );
-    // let the lambda caputre a raw ptr to the output 
-    // the output has all the info that we need
-    // so the lambda can actually access the stuff to work on 
-    // let lambda know where to look, o is lambdas way back to node it lives in 
-    // cuz self, other, out are all in the stack frame and get destroyed
+    // d(a*b)/da = b and d(a*b)/db = a, so each input's grad is the other input's value * incoming grad
     out->backward = [o = out.get()] {
-        o->inputs[0]->grad += o->inputs[1]->data * o->grad; 
-        o->inputs[1]->grad += o->inputs[0]->data * o->grad; 
+        o->inputs[0]->grad += o->inputs[1]->data * o->grad;
+        o->inputs[1]->grad += o->inputs[0]->data * o->grad;
     };
     return out;
 }
@@ -82,15 +86,15 @@ shared_ptr<Value> operator*(double other, const shared_ptr<Value>& self) {
 }
 
 shared_ptr<Value> operator/(const shared_ptr<Value>& self, const shared_ptr<Value>& other) {
-    // think of this is self/other, dself = 1/other, dother = self/other^2
     shared_ptr<Value> out = make_shared<Value>(
         self->data / other->data,
         vector<shared_ptr<Value>>{self, other},
-        Op::MULT 
+        Op::DIV
     );
+    // d(a/b)/da = 1/b and d(a/b)/db = -a/b^2
     out->backward = [o = out.get()] {
         o->inputs[0]->grad += (1 / o->inputs[1]->data) * o->grad;
-        o->inputs[1]->grad += (o->inputs[0]->data / pow(o->inputs[0]->data, 2)) * o->grad;
+        o->inputs[1]->grad += -(o->inputs[0]->data / pow(o->inputs[1]->data, 2)) * o->grad;
     };
     return out;
 }
@@ -100,44 +104,40 @@ shared_ptr<Value> operator/(const shared_ptr<Value>& self, double other) {
 }
 
 shared_ptr<Value> operator/(double other, const shared_ptr<Value>& self) {
-    return self / other;
+    return make_shared<Value>(other) / self;
 }
 
-// tanh funciton as our activiation function for now 
+// tanh as our activation function for now
 shared_ptr<Value> tanh(const shared_ptr<Value>& self) {
     double x = self->data;
-    // huge values of x can cause overflow here, so need to keep exponent negative
+    // tanh(x) = (e^2x - 1) / (e^2x + 1), but for large positive x e^2x overflows to inf and gives inf/inf = NaN.
+    // For x >= 0, use the same formula multiplied through by e^-2x so the exponent is never positive.
     double t = 0;
-    if (x < 0) { t = (exp(2*x) - 1) / (exp(2*x) + 1); } // actual tanh value for out 
-    else { t = (1 - exp(2*(-x))) / (1 + exp(2*(-x))); } // actual tanh value for out
+    if (x < 0) { t = (exp(2*x) - 1) / (exp(2*x) + 1); }
+    else { t = (1 - exp(2*(-x))) / (1 + exp(2*(-x))); }
     shared_ptr<Value> out = make_shared<Value>(t, vector<shared_ptr<Value>>{self}, Op::TANH);
-    // set our outs gradient, so take local deriv of its single input, and mult by incoming gradient
+    // d tanh(x)/dx = 1 - tanh(x)^2, and tanh(x) is already stored in o->data
     out->backward = [o = out.get()] {
         o->inputs[0]->grad += (1 - pow(o->data, 2)) * o->grad;
     };
     return out;
 }
 
-// nodes backward pushes its gradient down to only its inputs
-// now we want to make a funciton that can call it in order instead of manually, only 1 .backward needed
-// build ordering using topological sort funciton
-
-// takes output node and returns list in forward order, every node comes striclty after its inputs
-// call on node to visit it, if alr in visited return (avoid duplicates)
-// if not visted add it to visited and visit (recursive call) every node in its inputs 
-// then add node to list
-// this makes it so node is only added to list after all its inputs have been added to list
+// Each node's backward only pushes grad one level down to its inputs, so to backprop the whole
+// graph with a single call we need to run them in the right order.
+// Topological sort: DFS that adds a node to the list only after all of its inputs are added,
+// so every node comes strictly after its inputs.
 
 // recursive helper: visited and order are shared across every call
 void visit(const shared_ptr<Value>& node,
            unordered_set<Value*>& visited,
            vector<shared_ptr<Value>>& order) {
-    if (visited.contains(node.get())) { return; } // already visited
+    // a node can be reached through more than one path, only add it once
+    if (visited.contains(node.get())) { return; }
     visited.insert(node.get());
-    for (const auto& input : node->inputs) {      // no-op if it has none
+    for (const auto& input : node->inputs) {
         visit(input, visited, order);
     }
-    // only after all inputs have been added do we add this node
     order.push_back(node);
 }
 
@@ -149,64 +149,56 @@ vector<shared_ptr<Value>> build(const shared_ptr<Value>& output) {
     return order;
 }
 
-// note we wanna do our backward calc in REVERSE order of this list, start from output and go backwards
+// Grads aren't reset first, so calling this twice on the same graph accumulates.
 void backprop(const shared_ptr<Value>& output) {
     vector<shared_ptr<Value>> order = build(output);
-    output->grad = 1;
-    // iterate from end, deref it to get node and call its backward
-    // way the ordering is setup means that a node has its complete gradient before pushing back to its inputs
-    // since all nodes that used it as an input have alr pushed back gradient
+    output->grad = 1; // d(output)/d(output), seeds the chain rule
+    // Walk the order in reverse (output first). By the time a node's backward runs, every node
+    // that used it as an input has already pushed its grad in, so its grad is complete.
     for (auto nodeIt = order.rbegin(); nodeIt != order.rend(); ++nodeIt) {
         shared_ptr<Value>& node = *nodeIt;
         node->backward();
     }
 }
 
-// takes in a function (our calcution) f that takes a variable leaf node, does forward pass
-// and returns the output calculated
-// x is the variable in question
-// compute the numerical gradient of x and compare against a backprop pass grad, return the diff
+// Checks backprop against a numerical derivative.
+// f builds the graph from a leaf x and returns the output, called once per evaluation so each gets a fresh graph.
+// Returns the relative error between backprop's dx and the numerical dx.
 double grad_check(function<shared_ptr<Value>(const shared_ptr<Value>&)> f, double x) {
-    // compute numerical gradient, traditional derivative calc 
+    // central difference: (f(x+h) - f(x-h)) / 2h, more accurate than one-sided (f(x+h) - f(x)) / h
     double h = 0.0001;
     double dfdx = (f(make_shared<Value>(x + h))->data - f(make_shared<Value>(x-h))->data) / (2 * h);
-    // now do our normal forward pass / backprop
     shared_ptr<Value> xval = make_shared<Value>(x);
     shared_ptr<Value> output = f(xval);
-    backprop(output); 
+    backprop(output);
 
-    // use relative error, so we can see how big the error is in terms of the size of the gradient
-    // big gradient, small error ok, small gradient small error not ok
+    // Relative error, so the tolerance scales with the size of the gradient:
+    // an error of 1e-4 is fine on a grad of 100, but not on a grad of 1e-3.
+    // The 1e-8 floor avoids dividing by 0 when both grads are 0.
     double den = max({abs(xval->grad), abs(dfdx), 1e-8});
     return abs(xval->grad - dfdx) / den;
 }
 
-// each value object / node is on the heap, it exists once
-// so its the same object everywhere its used if we reuse nodes, shared
-// so gradients accumulate on one object
-// and child nodes keep their inputs alive for backward pass
-
 
 class Neuron {
   public:
-    // weights and biases are Value obj, since we want to see their gradient and 
-    // adjust accordinly in training 
     unsigned long n_inputs;
+    // weights and bias are Values so backprop gives them grads we can use to update them in training
     vector<shared_ptr<Value>> weights;
     shared_ptr<Value> bias;
 
     Neuron(unsigned long n): n_inputs{n} {
-        // setup random dist of nums, use reproducible seed if we want
+        // seeded from random_device, swap rd() for a fixed number to get reproducible runs
         random_device rd;
         mt19937 gen(rd());
         uniform_real_distribution<double> dist(-1, 1);
-        // populate weights and biases for this neuron
         for (int i = 0; i < n_inputs; ++i) {
             weights.push_back(make_shared<Value>(dist(gen)));
         }
         bias = make_shared<Value>(dist(gen));
     }
-    // takes vector of input nodes, and returns dot product + tanh activation function as a new Value
+    // returns tanh(w·x + b) as a new Value
+    // if inputs and weights differ in length, only the first min of the two are used
     shared_ptr<Value> operator()(const vector<shared_ptr<Value>>& inputs) {
         shared_ptr<Value> dot = make_shared<Value>(0);
         for (int i = 0; i < min(inputs.size(), n_inputs); ++i) {
@@ -232,6 +224,8 @@ void test_neuron_fixed() {
     shared_ptr<Value> out = n(xs);
     backprop(out);
 
+    // w·x + b = 1 - 0.6 - 0.3 + 0.1 = 0.2, and the tanh local grad is 1 - tanh(0.2)^2 ≈ 0.9610,
+    // so dw_i = x_i * 0.9610, dx_i = w_i * 0.9610, db = 0.9610
     check("fixed: out = tanh(0.2)", approx(out->data, 0.19738));
     check("fixed: dw0 = 1.9221",   approx(n.weights[0]->grad, 1.9221));
     check("fixed: dw1 = 2.8831",   approx(n.weights[1]->grad, 2.8831));
