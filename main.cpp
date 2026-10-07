@@ -4,7 +4,13 @@
 #include <unordered_set>
 #include <vector>
 #include <functional>
+#include <random>
+#include <string>
 using namespace std;
+
+
+// TODO: 
+// add subtraction, negation exp, pow 
 
 // our ops for tracking backward pass
 enum class Op {NONE, ADD, MULT, TANH};
@@ -75,6 +81,27 @@ shared_ptr<Value> operator*(double other, const shared_ptr<Value>& self) {
     return self * other;
 }
 
+shared_ptr<Value> operator/(const shared_ptr<Value>& self, const shared_ptr<Value>& other) {
+    // think of this is self/other, dself = 1/other, dother = self/other^2
+    shared_ptr<Value> out = make_shared<Value>(
+        self->data / other->data,
+        vector<shared_ptr<Value>>{self, other},
+        Op::MULT 
+    );
+    out->backward = [o = out.get()] {
+        o->inputs[0]->grad += (1 / o->inputs[1]->data) * o->grad;
+        o->inputs[1]->grad += (o->inputs[0]->data / pow(o->inputs[0]->data, 2)) * o->grad;
+    };
+    return out;
+}
+
+shared_ptr<Value> operator/(const shared_ptr<Value>& self, double other) {
+    return self / make_shared<Value>(other);
+}
+
+shared_ptr<Value> operator/(double other, const shared_ptr<Value>& self) {
+    return self / other;
+}
 
 // tanh funciton as our activiation function for now 
 shared_ptr<Value> tanh(const shared_ptr<Value>& self) {
@@ -100,19 +127,31 @@ shared_ptr<Value> tanh(const shared_ptr<Value>& self) {
 // if not visted add it to visited and visit (recursive call) every node in its inputs 
 // then add node to list
 // this makes it so node is only added to list after all its inputs have been added to list
-void build(const shared_ptr<Value>& node, unordered_set<Value*>& visited, vector<shared_ptr<Value>>& order) {
-    if (visited.contains(node.get()) == true) { return; } // node alr visited
-    else { // not visited
-        visited.insert(node.get()); // add to visited set
-        for (const auto &input : node->inputs) { // visit all its inputs, no-op if has none
-            build(input, visited, order);
-        }
-        // only after all inputs have been visited and added to list we add this node
-        order.push_back(node);
+
+// recursive helper: visited and order are shared across every call
+void visit(const shared_ptr<Value>& node,
+           unordered_set<Value*>& visited,
+           vector<shared_ptr<Value>>& order) {
+    if (visited.contains(node.get())) { return; } // already visited
+    visited.insert(node.get());
+    for (const auto& input : node->inputs) {      // no-op if it has none
+        visit(input, visited, order);
     }
+    // only after all inputs have been added do we add this node
+    order.push_back(node);
 }
+
+// entry point: creates the shared state once and returns the order
+vector<shared_ptr<Value>> build(const shared_ptr<Value>& output) {
+    unordered_set<Value*> visited;
+    vector<shared_ptr<Value>> order;
+    visit(output, visited, order);
+    return order;
+}
+
 // note we wanna do our backward calc in REVERSE order of this list, start from output and go backwards
-void backprop(const shared_ptr<Value>& output, vector<shared_ptr<Value>>& order) {
+void backprop(const shared_ptr<Value>& output) {
+    vector<shared_ptr<Value>> order = build(output);
     output->grad = 1;
     // iterate from end, deref it to get node and call its backward
     // way the ordering is setup means that a node has its complete gradient before pushing back to its inputs
@@ -134,10 +173,7 @@ double grad_check(function<shared_ptr<Value>(const shared_ptr<Value>&)> f, doubl
     // now do our normal forward pass / backprop
     shared_ptr<Value> xval = make_shared<Value>(x);
     shared_ptr<Value> output = f(xval);
-    vector<shared_ptr<Value>> order{};
-    unordered_set<Value*> visited{};
-    build(output, visited, order);
-    backprop(output, order);
+    backprop(output); 
 
     // use relative error, so we can see how big the error is in terms of the size of the gradient
     // big gradient, small error ok, small gradient small error not ok
@@ -150,22 +186,75 @@ double grad_check(function<shared_ptr<Value>(const shared_ptr<Value>&)> f, doubl
 // so gradients accumulate on one object
 // and child nodes keep their inputs alive for backward pass
 
+
+class Neuron {
+  public:
+    // weights and biases are Value obj, since we want to see their gradient and 
+    // adjust accordinly in training 
+    unsigned long n_inputs;
+    vector<shared_ptr<Value>> weights;
+    shared_ptr<Value> bias;
+
+    Neuron(unsigned long n): n_inputs{n} {
+        // setup random dist of nums, use reproducible seed if we want
+        random_device rd;
+        mt19937 gen(rd());
+        uniform_real_distribution<double> dist(-1, 1);
+        // populate weights and biases for this neuron
+        for (int i = 0; i < n_inputs; ++i) {
+            weights.push_back(make_shared<Value>(dist(gen)));
+        }
+        bias = make_shared<Value>(dist(gen));
+    }
+    // takes vector of input nodes, and returns dot product + tanh activation function as a new Value
+    shared_ptr<Value> operator()(const vector<shared_ptr<Value>>& inputs) {
+        shared_ptr<Value> dot = make_shared<Value>(0);
+        for (int i = 0; i < min(inputs.size(), n_inputs); ++i) {
+            dot = dot + (weights[i] * inputs[i]);
+        }
+        dot = dot + bias;
+        shared_ptr<Value> output = tanh(dot);
+        return output;
+    }
+};
+
+bool approx(double a, double b) { return fabs(a - b) < 1e-4; }
+void check(const string& name, bool ok) { cout << (ok ? "PASS  " : "FAIL  ") << name << endl; }
+
+void test_neuron_fixed() {
+    vector<shared_ptr<Value>> xs = { make_shared<Value>(2.0), make_shared<Value>(3.0), make_shared<Value>(-1.0) };
+    Neuron n{3};
+    n.weights[0]->data = 0.5;
+    n.weights[1]->data = -0.2;
+    n.weights[2]->data = 0.3;
+    n.bias->data = 0.1;
+
+    shared_ptr<Value> out = n(xs);
+    backprop(out);
+
+    check("fixed: out = tanh(0.2)", approx(out->data, 0.19738));
+    check("fixed: dw0 = 1.9221",   approx(n.weights[0]->grad, 1.9221));
+    check("fixed: dw1 = 2.8831",   approx(n.weights[1]->grad, 2.8831));
+    check("fixed: dw2 = -0.9610",  approx(n.weights[2]->grad, -0.9610));
+    check("fixed: db = 0.9610",    approx(n.bias->grad, 0.9610));
+    check("fixed: dx0 = 0.4805",   approx(xs[0]->grad, 0.4805));
+    check("fixed: dx1 = -0.1922",  approx(xs[1]->grad, -0.1922));
+    check("fixed: dx2 = 0.2883",   approx(xs[2]->grad, 0.2883));
+}
+
+void test_neuron_random() {
+    vector<shared_ptr<Value>> xs = { make_shared<Value>(2.0), make_shared<Value>(3.0), make_shared<Value>(-1.0) };
+    Neuron n{3};
+    shared_ptr<Value> out = n(xs);
+    backprop(out);
+
+    check("random: out in (-1, 1)", out->data > -1 && out->data < 1);
+    bool all_nonzero = (n.bias->grad != 0);
+    for (const auto& w : n.weights) if (w->grad == 0) all_nonzero = false;
+    check("random: every weight and bias has nonzero grad", all_nonzero);
+}
+
 int main() {
-   // function for testing, builds out the graph 
-    auto f = [](const shared_ptr<Value>& x) {
-        shared_ptr<Value> a = 2 * x;
-        shared_ptr<Value> b = a + 1;
-        shared_ptr<Value> c = 3 * a;
-        return b + c;
-    };
-
-    double err = grad_check(f, 2);
-    cout << err << endl;
-
-    // test grad_check on a non linear functions 
-    auto cubic  = [](const shared_ptr<Value>& x) { return x * x * x; };
-    auto neuron = [](const shared_ptr<Value>& x) { return tanh(2 * x + (-1)); };
-
-    cout << "cubic  rel err: " << grad_check(cubic, 1.5) << endl;
-    cout << "neuron rel err: " << grad_check(neuron, 1)  << endl;
+    test_neuron_fixed();
+    test_neuron_random();
 }
