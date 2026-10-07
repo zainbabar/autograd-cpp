@@ -7,9 +7,11 @@ using namespace std;
 
 // DONE:
 // - forward pass enigne, add mult ops, fixed ownereship
-// NEXT:
 // - backward step for add and mult as a switch on op
 // - each node step does only its local contribution to its INPUTS w/ += 
+// NEXT:
+// - write an ordering funciton
+// - ordering function returns vector w/ each nodes inputs before the node
 
 // our ops for tracking backward pass
 enum class Op {NONE, ADD, MULT};
@@ -20,6 +22,7 @@ class Value {
     vector<shared_ptr<Value>> inputs;  // the inputs that led to this current node
     double grad; // gradient
     Op op;
+    function<void()> backward = []{};
 
     Value(   
         double data, 
@@ -27,28 +30,18 @@ class Value {
         Op op=Op::NONE  // none by def
     ): data{data}, inputs{inputs}, grad{0}, op{op} {} 
 
-    void backward() {
-        switch(op) {
-            case Op::ADD: // add just passes on the incoming gradient
-                for (auto input : inputs) {
-                    input->grad += 1 * this->grad;
-                }
-                return;
-            case Op::MULT: // swap the values to get local deriv, and mult by incoming gradient
-                inputs[0]->grad += inputs[1]->data * this->grad;
-                inputs[1]->grad += inputs[0]->data * this->grad;
-                return;
-            case Op::NONE:
-                return;
-        }
-    }
 };
 shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Value>& other) {
-    return make_shared<Value>(
+    shared_ptr<Value> out = make_shared<Value>(
         self->data + other->data,
         vector<shared_ptr<Value>>{self, other},
         Op::ADD
     );
+    out->backward = [self, other, out] {
+        self->grad += 1 * out->grad;
+         other->grad += 1 * out->grad;
+    };
+    return out;
 }
 
 shared_ptr<Value> operator+(const shared_ptr<Value>& self, double other) {
@@ -60,11 +53,16 @@ shared_ptr<Value> operator+(double other, const shared_ptr<Value>& self) {
 }
 
 shared_ptr<Value> operator*(const shared_ptr<Value>& self, const shared_ptr<Value>& other) {
-    return make_shared<Value>(
+    shared_ptr<Value> out = make_shared<Value>(
         self->data * other->data,
         vector<shared_ptr<Value>>{self, other},
         Op::MULT
     );
+    out->backward = [self, other, out] {
+        self->grad += other->data * out->grad; 
+        other->grad += self->data * out->grad; 
+    };
+    return out;
 }
 
 shared_ptr<Value> operator*(const shared_ptr<Value>& self, double other) {
