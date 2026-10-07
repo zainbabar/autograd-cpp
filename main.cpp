@@ -4,7 +4,6 @@
 #include <unordered_set>
 #include <vector>
 #include <functional>
-#include <algorithm>
 using namespace std;
 
 // our ops for tracking backward pass
@@ -80,6 +79,7 @@ shared_ptr<Value> operator*(double other, const shared_ptr<Value>& self) {
     return self * other;
 }
 
+
 // tanh funciton as our activiation function for now 
 shared_ptr<Value> tanh(const shared_ptr<Value>& self) {
     double x = self->data;
@@ -119,19 +119,41 @@ void build(const shared_ptr<Value>& node, unordered_set<Value*>& visited, vector
 void backprop(const shared_ptr<Value>& output, vector<shared_ptr<Value>>& order) {
     output->grad = 1;
     // iterate from end, deref it to get node and call its backward
-    // the way the ordering is setup node pushes its gradient back to all its inputs before
-    // anyhting else touches it 
+    // way the ordering is setup means that a node has its complete gradient before pushing back to its inputs
+    // since all nodes that used it as an input have alr pushed back gradient
     for (auto nodeIt = order.rbegin(); nodeIt != order.rend(); ++nodeIt) {
         shared_ptr<Value>& node = *nodeIt;
         node->backward();
     }
 }
 
+// takes in a function (our calcution) f that takes a variable leaf node, does forward pass
+// and returns the output calculated
+// x is the variable in question
+// compute the numerical gradient of x and compare against a backprop pass grad, return the diff
+double grad_check(function<shared_ptr<Value>(const shared_ptr<Value>&)> f, double x) {
+    // compute numerical gradient, traditional derivative calc 
+    double h = 0.0001;
+    double dfdx = (f(make_shared<Value>(x + h))->data - f(make_shared<Value>(x-h))->data) / (2 * h);
+    // now do our normal forward pass / backprop
+    shared_ptr<Value> xval = make_shared<Value>(x);
+    shared_ptr<Value> output = f(xval);
+    vector<shared_ptr<Value>> order{};
+    unordered_set<Value*> visited{};
+    build(output, visited, order);
+    backprop(output, order);
+
+    // use relative error, so we can see how big the error is in terms of the size of the gradient
+    // big gradient, small error ok, small gradient small error not ok
+    double den = max({abs(xval->grad), abs(dfdx), 1e-8});
+    return abs(xval->grad - dfdx) / den;
+}
 
 // each value object / node is on the heap, it exists once
 // so its the same object everywhere its used if we reuse nodes, shared
 // so gradients accumulate on one object
 // and child nodes keep their inputs alive for backward pass
+
 int main() {
     // testing stuff hidden
     /*
@@ -167,7 +189,6 @@ int main() {
     vp dp = x1w1 + x2w2;
     vp n = dp + b;
     vp o = tanh(n);
-    o->grad = 1; // set gradient of output 
 
     // try out using automatic gradient calc now 
     // visited set and ordering for build function
@@ -178,4 +199,23 @@ int main() {
     backprop(o,order);
 
     cout << x1->grad << " " << w1->grad << " " << x2->grad << " " << w2->grad << endl;
+
+    // function for testing, builds out the graph 
+    auto f = [](const shared_ptr<Value>& x) {
+        shared_ptr<Value> a = 2 * x;
+        shared_ptr<Value> b = a + 1;
+        shared_ptr<Value> c = 3 * a;
+        return b + c;
+    };
+
+    double err = grad_check(f, 2);
+    cout << err << endl;
+
+    // test grad_check on a non linear functions 
+    auto cubic  = [](const shared_ptr<Value>& x) { return x * x * x; };
+    auto neuron = [](const shared_ptr<Value>& x) { return tanh(2 * x + (-1)); };
+
+    cout << "cubic  rel err: " << grad_check(cubic, 1.5) << endl;
+    cout << "neuron rel err: " << grad_check(neuron, 1)  << endl;
+
 }
