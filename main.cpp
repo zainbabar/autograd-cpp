@@ -1,7 +1,15 @@
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <vector>
 using namespace std;
+
+
+// DONE:
+// - forward pass enigne, add mult ops, fixed ownereship
+// NEXT:
+// - backward step for add and mult as a switch on op
+// - each node step does only its local contribution to its INPUTS w/ += 
 
 // our ops for tracking backward pass
 enum class Op {NONE, ADD, MULT};
@@ -20,6 +28,19 @@ class Value {
     ): data{data}, inputs{inputs}, grad{0}, op{op} {} 
 
     void backward() {
+        switch(op) {
+            case Op::ADD: // add just passes on the incoming gradient
+                for (auto input : inputs) {
+                    input->grad += 1 * this->grad;
+                }
+                return;
+            case Op::MULT: // swap the values to get local deriv, and mult by incoming gradient
+                inputs[0]->grad += inputs[1]->data * this->grad;
+                inputs[1]->grad += inputs[0]->data * this->grad;
+                return;
+            case Op::NONE:
+                return;
+        }
     }
 };
 shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Value>& other) {
@@ -53,13 +74,29 @@ shared_ptr<Value> operator*(const shared_ptr<Value>& self, double other) {
 shared_ptr<Value> operator*(double other, const shared_ptr<Value>& self) {
     return self * other;
 }
-// have working both scalar add mult and and value add mult 
-// now need to write a backward function to comptue its gradient
-// ownership issue, need to make nodes live on the heap from the start
-// so the operators deal with pointers
 
+// each value object / node is on the heap, it exists once
+// so its the same object everywhere its used if we reuse nodes, shared
+// so gradients accumulate on one object
+// and child nodes keep their inputs alive for backward pass
 int main() {
-    shared_ptr<Value> x = make_shared<Value>(5);
+    shared_ptr<Value> x = make_shared<Value>(2);
     shared_ptr<Value> y = make_shared<Value>(3);
-    shared_ptr<Value> z = x + y;
+    shared_ptr<Value> q = x + y;
+    shared_ptr<Value> f = x * q;
+    // sketched out:
+    // dfdq += 2 -> intermediate graident
+    // dqdx += 1 -> local derivative 
+    // dfdx += dfdq * dqdx = 2 * 1 = 2 -> current gradient, just passes on, local deriv is 1
+    // dqdy += 1 -> intermediate
+    // dfdy += dfdq * dqdy = 2 * 1 = 2 -> gradient, again just passes on since add
+    // now need to add more to x.grad since its used twice, add the 
+    // dfdx += 5 -> final gradient, (since q is 5) 
+    // so final gradients are x.grad = 7 (5 + 2), y.grad = 2
+
+    // test this out, manually call .backward on all see if it works
+    f->grad = 1;
+    f->backward();
+    q->backward();
+    cout << "x.grad: " << x->grad << ", y.grad: " << y->grad << endl;
 }
