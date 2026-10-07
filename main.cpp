@@ -1,18 +1,11 @@
 #include <iostream>
-#include <iterator>
 #include <memory>
 #include <cmath>
+#include <unordered_set>
 #include <vector>
+#include <functional>
+#include <algorithm>
 using namespace std;
-
-
-// DONE:
-// - forward pass enigne, add mult ops, fixed ownereship
-// - backward step for add and mult as a switch on op
-// - each node step does only its local contribution to its INPUTS w/ += 
-// NEXT:
-// - write an ordering funciton
-// - ordering function returns vector w/ each nodes inputs before the node
 
 // our ops for tracking backward pass
 enum class Op {NONE, ADD, MULT, TANH};
@@ -23,7 +16,7 @@ class Value {
     vector<shared_ptr<Value>> inputs;  // the inputs that led to this current node
     double grad; // gradient
     Op op;
-    function<void()> backward;
+    function<void()> backward; // each nodes backward pushes its own grad to its own inputs
 
     Value(   
         double data, 
@@ -48,6 +41,10 @@ shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Valu
     };
     return out;
 }
+
+// make it easier to create new shit, refactor this to have a wrapper class to make it cleaner
+using vp = shared_ptr<Value>;
+vp val(double x) { return make_shared<Value>(x); }
 
 shared_ptr<Value> operator+(const shared_ptr<Value>& self, double other) {
     return self + make_shared<Value>(other);
@@ -98,16 +95,50 @@ shared_ptr<Value> tanh(const shared_ptr<Value>& self) {
     return out;
 }
 
+// nodes backward pushes its gradient down to only its inputs
+// now we want to make a funciton that can call it in order instead of manually, only 1 .backward needed
+// build ordering using topological sort funciton
+
+// takes output node and returns list in forward order, every node comes striclty after its inputs
+// call on node to visit it, if alr in visited return (avoid duplicates)
+// if not visted add it to visited and visit (recursive call) every node in its inputs 
+// then add node to list
+// this makes it so node is only added to list after all its inputs have been added to list
+void build(const shared_ptr<Value>& node, unordered_set<Value*>& visited, vector<shared_ptr<Value>>& order) {
+    if (visited.contains(node.get()) == true) { return; } // node alr visited
+    else { // not visited
+        visited.insert(node.get()); // add to visited set
+        for (const auto &input : node->inputs) { // visit all its inputs, no-op if has none
+            build(input, visited, order);
+        }
+        // only after all inputs have been visited and added to list we add this node
+        order.push_back(node);
+    }
+}
+// note we wanna do our backward calc in REVERSE order of this list, start from output and go backwards
+void backprop(const shared_ptr<Value>& output, vector<shared_ptr<Value>>& order) {
+    output->grad = 1;
+    // iterate from end, deref it to get node and call its backward
+    // the way the ordering is setup node pushes its gradient back to all its inputs before
+    // anyhting else touches it 
+    for (auto nodeIt = order.rbegin(); nodeIt != order.rend(); ++nodeIt) {
+        shared_ptr<Value>& node = *nodeIt;
+        node->backward();
+    }
+}
+
+
 // each value object / node is on the heap, it exists once
 // so its the same object everywhere its used if we reuse nodes, shared
 // so gradients accumulate on one object
 // and child nodes keep their inputs alive for backward pass
 int main() {
+    // testing stuff hidden
+    /*
     shared_ptr<Value> x = make_shared<Value>(2);
     shared_ptr<Value> y = make_shared<Value>(3);
     shared_ptr<Value> q = x + y;
-    shared_ptr<Value> r = x * q;
-    shared_ptr<Value> f = tanh(r);
+    shared_ptr<Value> f = q * x;
     // sketched out:
     // dfdq += 2 -> intermediate graident
     // dqdx += 1 -> local derivative 
@@ -121,10 +152,30 @@ int main() {
     // test this out, manually call .backward on all see if it works
     f->grad = 1;
     f->backward();
-    r->backward();
     q->backward();
     cout << "x.grad: " << x->grad << ", y.grad: " << y->grad << endl;
-    shared_ptr<Value> test = make_shared<Value>(400);
-    shared_ptr<Value> out = tanh(test);
-    cout << out->data << endl;
+    */
+    // weights and biases
+    vp x1 = val(2);
+    vp x2 = val(0);
+    vp w1 = val(-3);
+    vp w2 = val(1);
+    vp b = val(6.8813735870195432);
+
+    vp x1w1 = x1 * w1;
+    vp x2w2 = x2 * w2;
+    vp dp = x1w1 + x2w2;
+    vp n = dp + b;
+    vp o = tanh(n);
+    o->grad = 1; // set gradient of output 
+
+    // try out using automatic gradient calc now 
+    // visited set and ordering for build function
+    unordered_set<Value*> visited{};
+    vector<shared_ptr<Value>> order{};
+    build(o, visited, order);
+
+    backprop(o,order);
+
+    cout << x1->grad << " " << w1->grad << " " << x2->grad << " " << w2->grad << endl;
 }
