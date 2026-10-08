@@ -44,7 +44,7 @@ shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Valu
     // The lambda captures a raw pointer to out, not a reference or a shared_ptr:
     // - self/other/out are locals, so capturing by reference would dangle once this returns
     // - a shared_ptr copy would make out own itself (ref cycle), so it would never be freed
-    // The lambda is stored inside *o, so o is always valid whenever it runs.
+    // The lambda is stored inside out itself, so the raw pointer is always valid whenever it runs.
     // d(a+b)/da = d(a+b)/db = 1, so each input just gets the incoming grad.
     // += since a node can feed several outputs, its grad is the sum over all of them (also handles a + a)
     out->backward = [o = out.get()] {
@@ -209,9 +209,7 @@ class Neuron {
         return output;
     }
 
-    // param nodes are the weights and biases, after backprop they have a gradient
-    // by getting a vector of all of them we can access them and update their values
-    // by the lr and gradient
+    // weights + bias, so a training loop can update each one by lr * grad after backprop
     vector<shared_ptr<Value>> parameters() {
         vector<shared_ptr<Value>> params = weights;
         params.push_back(bias);
@@ -226,12 +224,12 @@ class Layer {
     vector<Neuron> neurons;
     Layer(unsigned long n_neurons, unsigned long n_inputs): 
         n_neurons{n_neurons}, n_inputs{n_inputs} {
-        // populate layer w/ neurons 
+        // every neuron in the layer sees the same n_inputs
         for (int i = 0; i < n_neurons; ++i) {
             neurons.push_back(Neuron{n_inputs});
         }
     }
-    // run inputs thorugh all neurons in layer, return all outputs
+    // runs the inputs through every neuron, returns one output per neuron
     vector<shared_ptr<Value>> operator()(const vector<shared_ptr<Value>>& inputs) {
         vector<shared_ptr<Value>> outputs{};
         for (auto& neuron : neurons) {
@@ -240,48 +238,45 @@ class Layer {
         return outputs;
     }
 
-    // every neuron in layer gives us its params, concat it all tg
+    // every neuron's params concatenated into one list
     vector<shared_ptr<Value>> parameters() {
         vector<shared_ptr<Value>> params{};
         for (auto& neuron : neurons) {
             vector<shared_ptr<Value>> nparams = neuron.parameters();
-            // concat current neurons params to end of our layer param list 
             params.insert(params.end(), nparams.begin(), nparams.end());
         }
         return params;
     }
 };
 
-// note last output size for mlp should be 1.
-// so based on the class above, it returns a vector of size 1
+// The last entry in layer_sizes should be 1: operator() returns a single Value,
+// so it only takes the first output of the last layer and drops the rest.
 class MLP {
   public:
     unsigned long n_inputs;
     unsigned long n_layers;
     vector<unsigned long> layer_sizes;
     vector<Layer> layers;
-    // input size is provided, and have a vector of layer sizes we want
-    MLP(unsigned long n_inputs, vector<unsigned long> layer_sizes): 
+    // layer_sizes[i] is the number of neurons in layer i
+    MLP(unsigned long n_inputs, vector<unsigned long> layer_sizes):
         n_inputs{n_inputs}, n_layers{layer_sizes.size()}, layer_sizes{layer_sizes} {
-        layers.push_back(Layer{layer_sizes[0], n_inputs}); // our first layer, set it manually
-        // the rest of the layers input size is the previous layers (output) size
+        // the first layer takes the network's inputs, every later layer takes the previous layer's outputs
+        layers.push_back(Layer{layer_sizes[0], n_inputs});
         for (int i = 1; i < n_layers; ++i) {
             layers.push_back(Layer{layer_sizes[i], layer_sizes[i - 1]});
         }
     }
-    // run inputs through mlp, give us back our single output
+    // forward pass: feeds each layer's outputs into the next and returns the final output
     shared_ptr<Value> operator()(const vector<shared_ptr<Value>>& inputs) {
-        // ensure that our inputs size match up with what we expect
         assert(inputs.size() == n_inputs);
         vector<shared_ptr<Value>> outputs = inputs;
         for (auto& layer : layers) {
             outputs = layer(outputs);
         }
-        // left w vector of size 1, size of last layer, unwrap it to single node
         shared_ptr<Value> output = outputs[0];
         return output;
     }
-    // concat all layers params, final list of all params 
+    // every layer's params concatenated into one list
     vector<shared_ptr<Value>> parameters() {
         vector<shared_ptr<Value>> params{};
         for (auto& layer : layers) {
