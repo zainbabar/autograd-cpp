@@ -5,8 +5,13 @@ A small scalar autograd engine and neural net library in C++20, in the spirit of
 computation graph, and calling `backprop` on an output fills in the gradient of every node
 that went into it. On top of that there's a tiny MLP that can be trained with plain gradient descent.
 
-Everything currently lives in [main.cpp](main.cpp). The files in `src/`, `examples/` and `tests/`
-are placeholders for when it gets split into modules.
+The library is header-only, in `src/`:
+- [value.hpp](src/value.hpp): `Value`, the ops, `pow` and `tanh`
+- [autograd.hpp](src/autograd.hpp): topological sort (`build`) and `backprop`
+- [nn.hpp](src/nn.hpp): `Neuron`, `Layer`, `MLP`
+- [train.hpp](src/train.hpp): `loss`, `zero_grad`, `train`
+
+[tests/grad_check.cpp](tests/grad_check.cpp) checks the gradients, and [examples/xor.cpp](examples/xor.cpp) trains an MLP on XOR.
 
 ## Building and running
 
@@ -15,12 +20,13 @@ Requires CMake 3.20+ and a C++20 compiler.
 ```sh
 cmake -S . -B build
 cmake --build build
-./build/main
+./build/grad_check
+./build/xor
 ```
 
-`main()` runs three demos: backprop through a small expression, a grad check on every op,
-and training an MLP on XOR. Output looks something like this (weights are randomly
-initialised so the numbers change each run):
+`grad_check` runs backprop through a small expression and grad checks every op. `xor` trains
+an MLP on XOR. Output looks something like this (weights are randomly initialised so the
+training numbers change each run):
 
 ```
 == gradients of c = tanh(a*b + a/b) ==
@@ -36,7 +42,9 @@ initialised so the numbers change each run):
   x^3               6.80e-09
   tanh(x)           3.20e-10
   tanh(x*x/3) - x   1.46e-09
+```
 
+```
 == training a 2-4-3-1 MLP on XOR ==
   31 parameters
   epoch    0  loss 4.660180
@@ -63,7 +71,7 @@ initialised so the numbers change each run):
   constant exponent, and `tanh`.
 - `backprop(output)`: topologically sorts the graph, seeds `output->grad = 1`, then runs every
   node's `backward` in reverse order. Grads are not zeroed first, so running it twice accumulates.
-- `grad_check(f, x)`: compares backprop's gradient against a central-difference numerical
+- `grad_check(f, x)` (in `tests/grad_check.cpp`): compares backprop's gradient against a central-difference numerical
   gradient and returns the relative error.
 
 **Neural net**
@@ -105,5 +113,3 @@ for (auto& p : model.parameters()) {
 ## TODO
 
 - Ops: negation, `exp`, more activations (ReLU)
-- Split `main.cpp` into `src/value.*` and `src/nn.*`
-- Move the XOR demo to `examples/xor.cpp` and the grad checks to `tests/grad_check.cpp`
