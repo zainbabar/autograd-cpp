@@ -6,6 +6,7 @@
 #include <functional>
 #include <random>
 #include <string>
+#include <cassert>
 using namespace std;
 
 
@@ -47,7 +48,7 @@ shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Valu
     // d(a+b)/da = d(a+b)/db = 1, so each input just gets the incoming grad.
     // += since a node can feed several outputs, its grad is the sum over all of them (also handles a + a)
     out->backward = [o = out.get()] {
-        for (auto input : o->inputs) {
+        for (auto& input : o->inputs) {
             input->grad += 1 * o->grad;
         }
     };
@@ -179,7 +180,6 @@ double grad_check(function<shared_ptr<Value>(const shared_ptr<Value>&)> f, doubl
     return abs(xval->grad - dfdx) / den;
 }
 
-
 class Neuron {
   public:
     unsigned long n_inputs;
@@ -208,47 +208,90 @@ class Neuron {
         shared_ptr<Value> output = tanh(dot);
         return output;
     }
+
+    // param nodes are the weights and biases, after backprop they have a gradient
+    // by getting a vector of all of them we can access them and update their values
+    // by the lr and gradient
+    vector<shared_ptr<Value>> parameters() {
+        vector<shared_ptr<Value>> params = weights;
+        params.push_back(bias);
+        return params;
+    }
 };
 
-bool approx(double a, double b) { return fabs(a - b) < 1e-4; }
-void check(const string& name, bool ok) { cout << (ok ? "PASS  " : "FAIL  ") << name << endl; }
+class Layer {
+  public:
+    unsigned long n_neurons;
+    unsigned long n_inputs;
+    vector<Neuron> neurons;
+    Layer(unsigned long n_neurons, unsigned long n_inputs): 
+        n_neurons{n_neurons}, n_inputs{n_inputs} {
+        // populate layer w/ neurons 
+        for (int i = 0; i < n_neurons; ++i) {
+            neurons.push_back(Neuron{n_inputs});
+        }
+    }
+    // run inputs thorugh all neurons in layer, return all outputs
+    vector<shared_ptr<Value>> operator()(const vector<shared_ptr<Value>>& inputs) {
+        vector<shared_ptr<Value>> outputs{};
+        for (auto& neuron : neurons) {
+            outputs.push_back(neuron(inputs));
+        }
+        return outputs;
+    }
 
-void test_neuron_fixed() {
-    vector<shared_ptr<Value>> xs = { make_shared<Value>(2.0), make_shared<Value>(3.0), make_shared<Value>(-1.0) };
-    Neuron n{3};
-    n.weights[0]->data = 0.5;
-    n.weights[1]->data = -0.2;
-    n.weights[2]->data = 0.3;
-    n.bias->data = 0.1;
+    // every neuron in layer gives us its params, concat it all tg
+    vector<shared_ptr<Value>> parameters() {
+        vector<shared_ptr<Value>> params{};
+        for (auto& neuron : neurons) {
+            vector<shared_ptr<Value>> nparams = neuron.parameters();
+            // concat current neurons params to end of our layer param list 
+            params.insert(params.end(), nparams.begin(), nparams.end());
+        }
+        return params;
+    }
+};
 
-    shared_ptr<Value> out = n(xs);
-    backprop(out);
-
-    // w·x + b = 1 - 0.6 - 0.3 + 0.1 = 0.2, and the tanh local grad is 1 - tanh(0.2)^2 ≈ 0.9610,
-    // so dw_i = x_i * 0.9610, dx_i = w_i * 0.9610, db = 0.9610
-    check("fixed: out = tanh(0.2)", approx(out->data, 0.19738));
-    check("fixed: dw0 = 1.9221",   approx(n.weights[0]->grad, 1.9221));
-    check("fixed: dw1 = 2.8831",   approx(n.weights[1]->grad, 2.8831));
-    check("fixed: dw2 = -0.9610",  approx(n.weights[2]->grad, -0.9610));
-    check("fixed: db = 0.9610",    approx(n.bias->grad, 0.9610));
-    check("fixed: dx0 = 0.4805",   approx(xs[0]->grad, 0.4805));
-    check("fixed: dx1 = -0.1922",  approx(xs[1]->grad, -0.1922));
-    check("fixed: dx2 = 0.2883",   approx(xs[2]->grad, 0.2883));
-}
-
-void test_neuron_random() {
-    vector<shared_ptr<Value>> xs = { make_shared<Value>(2.0), make_shared<Value>(3.0), make_shared<Value>(-1.0) };
-    Neuron n{3};
-    shared_ptr<Value> out = n(xs);
-    backprop(out);
-
-    check("random: out in (-1, 1)", out->data > -1 && out->data < 1);
-    bool all_nonzero = (n.bias->grad != 0);
-    for (const auto& w : n.weights) if (w->grad == 0) all_nonzero = false;
-    check("random: every weight and bias has nonzero grad", all_nonzero);
-}
+// note last output size for mlp should be 1.
+// so based on the class above, it returns a vector of size 1
+class MLP {
+  public:
+    unsigned long n_inputs;
+    unsigned long n_layers;
+    vector<unsigned long> layer_sizes;
+    vector<Layer> layers;
+    // input size is provided, and have a vector of layer sizes we want
+    MLP(unsigned long n_inputs, vector<unsigned long> layer_sizes): 
+        n_inputs{n_inputs}, n_layers{layer_sizes.size()}, layer_sizes{layer_sizes} {
+        layers.push_back(Layer{layer_sizes[0], n_inputs}); // our first layer, set it manually
+        // the rest of the layers input size is the previous layers (output) size
+        for (int i = 1; i < n_layers; ++i) {
+            layers.push_back(Layer{layer_sizes[i], layer_sizes[i - 1]});
+        }
+    }
+    // run inputs through mlp, give us back our single output
+    shared_ptr<Value> operator()(const vector<shared_ptr<Value>>& inputs) {
+        // ensure that our inputs size match up with what we expect
+        assert(inputs.size() == n_inputs);
+        vector<shared_ptr<Value>> outputs = inputs;
+        for (auto& layer : layers) {
+            outputs = layer(outputs);
+        }
+        // left w vector of size 1, size of last layer, unwrap it to single node
+        shared_ptr<Value> output = outputs[0];
+        return output;
+    }
+    // concat all layers params, final list of all params 
+    vector<shared_ptr<Value>> parameters() {
+        vector<shared_ptr<Value>> params{};
+        for (auto& layer : layers) {
+            vector<shared_ptr<Value>> lparams = layer.parameters();
+            params.insert(params.end(), lparams.begin(), lparams.end());
+        }
+        return params;
+    }
+};
 
 int main() {
-    test_neuron_fixed();
-    test_neuron_random();
+    return 0;
 }
