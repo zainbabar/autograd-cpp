@@ -7,13 +7,14 @@
 #include <random>
 #include <string>
 #include <cassert>
+#include <iomanip>
 using namespace std;
 
 
-// TODO: add subtraction, negation, exp, pow
+// TODO: add negation, exp
 
 // which op produced a node (NONE for leaves)
-enum class Op {NONE, ADD, MULT, DIV, TANH};
+enum class Op {NONE, ADD, SUB, MULT, DIV, POW, TANH};
 
 // Every node lives on the heap behind a shared_ptr, so reusing a node in several ops means
 // they all point at the same object and its grad accumulates in one place.
@@ -33,8 +34,8 @@ class Value {
         vector<shared_ptr<Value>> inputs=vector<shared_ptr<Value>>{},
         Op op=Op::NONE
     ): data{data}, inputs{inputs}, grad{0}, op{op}, backward([]{}) {}
-
 };
+
 shared_ptr<Value> operator+(const shared_ptr<Value>& self, const shared_ptr<Value>& other) {
     shared_ptr<Value> out = make_shared<Value>(
         self->data + other->data,
@@ -62,6 +63,28 @@ shared_ptr<Value> operator+(const shared_ptr<Value>& self, double other) {
 
 shared_ptr<Value> operator+(double other, const shared_ptr<Value>& self) {
     return self + other;
+}
+
+shared_ptr<Value> operator-(const shared_ptr<Value>& self, const shared_ptr<Value>& other) {
+    shared_ptr<Value> out = make_shared<Value>(
+        self->data - other->data,
+        vector<shared_ptr<Value>>{self, other},
+        Op::SUB
+    );
+    // d(a-b)/da = 1 and d(a-b)/db = -1
+    out->backward = [o = out.get()] {
+        o->inputs[0]->grad += 1 * o->grad;
+        o->inputs[1]->grad += -1 * o->grad;
+    };
+    return out;
+}
+
+shared_ptr<Value> operator-(const shared_ptr<Value>& self, double other) {
+    return self - make_shared<Value>(other);
+}
+
+shared_ptr<Value> operator-(double other, const shared_ptr<Value>& self) {
+    return make_shared<Value>(other) - self;
 }
 
 shared_ptr<Value> operator*(const shared_ptr<Value>& self, const shared_ptr<Value>& other) {
@@ -106,6 +129,20 @@ shared_ptr<Value> operator/(const shared_ptr<Value>& self, double other) {
 
 shared_ptr<Value> operator/(double other, const shared_ptr<Value>& self) {
     return make_shared<Value>(other) / self;
+}
+
+// raises a Value to a constant power, the exponent is a plain double so it doesn't get a grad
+shared_ptr<Value> pow(const shared_ptr<Value>& self, double n) {
+    shared_ptr<Value> out = make_shared<Value>(
+        pow(self->data, n),
+        vector<shared_ptr<Value>>{self},
+        Op::POW
+    );
+    // d(x^n)/dx = n * x^(n-1), n isn't stored on the node so the lambda captures it by value
+    out->backward = [o = out.get(), n] {
+        o->inputs[0]->grad += n * pow(o->inputs[0]->data, n - 1) * o->grad;
+    };
+    return out;
 }
 
 // tanh as our activation function for now
@@ -287,6 +324,105 @@ class MLP {
     }
 };
 
+// wrap one row of plain numbers in fresh leaf nodes for a forward pass
+vector<shared_ptr<Value>> to_nodes(const vector<double>& row) {
+    vector<shared_ptr<Value>> nodes;
+    for (double d : row) {
+        nodes.push_back(make_shared<Value>(d));
+    }
+    return nodes;
+}
+
+// sum of squared errors over the whole dataset.
+// it's all one graph, so a single backprop on the result gives every param its grad for the full batch
+shared_ptr<Value> loss(MLP& model, const vector<vector<double>>& data, const vector<double>& targets) {
+    shared_ptr<Value> total = make_shared<Value>(0);
+    for (size_t i = 0; i < data.size(); ++i) {
+        shared_ptr<Value> pred = model(to_nodes(data[i]));
+        total = total + pow(pred - targets[i], 2.0);
+    }
+    return total;
+}
+
+// backprop accumulates into grad, so it has to be reset every step or old grads leak into the update
+void zero_grad(MLP& model) {
+    for (auto& param : model.parameters()) {
+        param->grad = 0;
+    }
+}
+
+// plain gradient descent: forward, zero grads, backward, then nudge every param against its grad
+void train(MLP& model, const vector<vector<double>>& data, const vector<double>& targets,
+           int epochs, double lr, int log_every) {
+    for (int epoch = 0; epoch <= epochs; ++epoch) {
+        shared_ptr<Value> L = loss(model, data, targets);
+        if (epoch % log_every == 0) {
+            cout << "  epoch " << setw(4) << epoch << "  loss " << L->data << endl;
+        }
+        zero_grad(model);
+        backprop(L);
+        for (auto& param : model.parameters()) {
+            param->data -= lr * param->grad;
+        }
+    }
+}
+
+// prints each prediction next to its target, then how many the model got right.
+// a prediction counts as right if it has the same sign as the target, since targets are -1/1
+void print_predictions(MLP& model, const vector<vector<double>>& inputs, const vector<double>& targets) {
+    int correct = 0;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        shared_ptr<Value> pred = model(to_nodes(inputs[i]));
+        bool right = (pred->data > 0) == (targets[i] > 0);
+        if (right) { ++correct; }
+        cout << "  (" << int(inputs[i][0]) << ", " << int(inputs[i][1]) << ")"
+             << "  target " << setw(2) << int(targets[i])
+             << "  pred " << showpos << pred->data << noshowpos
+             << (right ? "  ok" : "  WRONG") << endl;
+    }
+    cout << "\n  " << correct << "/" << inputs.size() << " correct"
+         << (correct == int(inputs.size()) ? ", converged" : ", didn't converge") << endl;
+}
+
 int main() {
-    return 0;
+    cout << fixed << setprecision(6);
+
+    // 1. backprop through a small expression by hand
+    cout << "== gradients of c = tanh(a*b + a/b) ==" << endl;
+    auto a = make_shared<Value>(0.5);
+    auto b = make_shared<Value>(-1.5);
+    auto c = tanh(a * b + a / b);
+    backprop(c);
+    cout << "  c = " << c->data << endl;
+    cout << "  dc/da = " << a->grad << endl;
+    cout << "  dc/db = " << b->grad << endl;
+
+    // 2. check every op's backward against a numerical derivative, errors should be ~1e-8 or smaller
+    cout << "\n== grad check (relative error vs numerical) ==" << endl;
+    using Fn = function<shared_ptr<Value>(const shared_ptr<Value>&)>;
+    vector<pair<string, Fn>> checks = {
+        {"x + 3",            [](const shared_ptr<Value>& x) { return x + 3; }},
+        {"2 - x",            [](const shared_ptr<Value>& x) { return 2 - x; }},
+        {"x * x",            [](const shared_ptr<Value>& x) { return x * x; }},
+        {"1 / x",            [](const shared_ptr<Value>& x) { return 1 / x; }},
+        {"x^3",              [](const shared_ptr<Value>& x) { return pow(x, 3); }},
+        {"tanh(x)",          [](const shared_ptr<Value>& x) { return tanh(x); }},
+        {"tanh(x*x/3) - x",  [](const shared_ptr<Value>& x) { return tanh(x * x / 3) - x; }},
+    };
+    for (auto& [name, f] : checks) {
+        cout << "  " << left << setw(18) << name << right << scientific << setprecision(2)
+             << grad_check(f, 0.7) << fixed << setprecision(6) << endl;
+    }
+
+    // 3. train an MLP on XOR, which a single neuron can't learn since it isn't linearly separable.
+    // targets are -1/1 instead of 0/1 to match tanh's output range
+    cout << "\n== training a 2-4-3-1 MLP on XOR ==" << endl;
+    const vector<vector<double>> xor_inputs = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+    const vector<double> xor_targets = {-1, 1, 1, -1};
+    MLP model(2, {4, 3, 1});
+    cout << "  " << model.parameters().size() << " parameters" << endl;
+    train(model, xor_inputs, xor_targets, 3000, 0.01, 500);
+
+    cout << "\n== predictions ==" << endl;
+    print_predictions(model, xor_inputs, xor_targets);
 }

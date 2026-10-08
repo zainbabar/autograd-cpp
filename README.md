@@ -3,17 +3,64 @@
 A small scalar autograd engine and neural net library in C++20, in the spirit of
 [micrograd](https://github.com/karpathy/micrograd). Every number is a `Value` node in a
 computation graph, and calling `backprop` on an output fills in the gradient of every node
-that went into it.
+that went into it. On top of that there's a tiny MLP that can be trained with plain gradient descent.
 
-Still a work in progress. Everything currently lives in [main.cpp](main.cpp). The files in
-`src/`, `examples/` and `tests/` are placeholders for when it gets split into modules.
+Everything currently lives in [main.cpp](main.cpp). The files in `src/`, `examples/` and `tests/`
+are placeholders for when it gets split into modules.
+
+## Building and running
+
+Requires CMake 3.20+ and a C++20 compiler.
+
+```sh
+cmake -S . -B build
+cmake --build build
+./build/main
+```
+
+`main()` runs three demos: backprop through a small expression, a grad check on every op,
+and training an MLP on XOR. Output looks something like this (weights are randomly
+initialised so the numbers change each run):
+
+```
+== gradients of c = tanh(a*b + a/b) ==
+  c = -0.794432
+  dc/da = -0.799235
+  dc/db = 0.102466
+
+== grad check (relative error vs numerical) ==
+  x + 3             1.10e-13
+  2 - x             1.10e-13
+  x * x             1.89e-13
+  1 / x             2.04e-08
+  x^3               6.80e-09
+  tanh(x)           3.20e-10
+  tanh(x*x/3) - x   1.46e-09
+
+== training a 2-4-3-1 MLP on XOR ==
+  31 parameters
+  epoch    0  loss 4.660180
+  epoch  500  loss 0.081877
+  epoch 1000  loss 0.017401
+  ...
+  epoch 3000  loss 0.003232
+
+== predictions ==
+  (0, 0)  target -1  pred -0.980843  ok
+  (0, 1)  target  1  pred +0.979051  ok
+  (1, 0)  target  1  pred +0.978775  ok
+  (1, 1)  target -1  pred -0.978013  ok
+
+  4/4 correct, converged
+```
 
 ## What's there
 
 **Engine**
 - `Value`: a heap-allocated node (always used through `shared_ptr<Value>`) holding `data`, `grad`,
   its inputs, the op that produced it, and a `backward` closure that pushes its grad down to its inputs.
-- Ops: `+`, `*`, `/` (each also works with a plain `double` on either side) and `tanh`.
+- Ops: `+`, `-`, `*`, `/` (each also works with a plain `double` on either side), `pow(x, n)` with a
+  constant exponent, and `tanh`.
 - `backprop(output)`: topologically sorts the graph, seeds `output->grad = 1`, then runs every
   node's `backward` in reverse order. Grads are not zeroed first, so running it twice accumulates.
 - `grad_check(f, x)`: compares backprop's gradient against a central-difference numerical
@@ -25,6 +72,11 @@ Still a work in progress. Everything currently lives in [main.cpp](main.cpp). Th
 - `MLP(n_inputs, layer_sizes)`: layers chained together. The last layer size should be 1,
   since the forward pass returns a single `Value`.
 - Each of these has `parameters()`, which returns every weight and bias so you can update them.
+
+**Training**
+- `loss(model, data, targets)`: sum of squared errors over the whole dataset, as one graph.
+- `zero_grad(model)`: resets every parameter's grad to 0.
+- `train(model, data, targets, epochs, lr, log_every)`: full-batch gradient descent, prints the loss every `log_every` epochs.
 
 ## Example
 
@@ -39,32 +91,19 @@ backprop(c);
 // check it against the numerical gradient
 double err = grad_check([](const shared_ptr<Value>& x) { return tanh(x * x / 3); }, 0.5);
 
-// one forward/backward/update step on an MLP
+// one forward/backward/update step on an MLP by hand
 MLP model(3, {4, 4, 1});
 vector<shared_ptr<Value>> x = {make_shared<Value>(1.0), make_shared<Value>(-2.0), make_shared<Value>(0.5)};
-auto diff = model(x) + -1.0;  // target 1.0 (no subtraction op yet)
-auto loss = diff * diff;
+auto loss = pow(model(x) - 1.0, 2);  // target 1.0
 backprop(loss);
 for (auto& p : model.parameters()) {
-    p->data += -0.05 * p->grad;
+    p->data -= 0.05 * p->grad;
     p->grad = 0;
 }
 ```
 
-## Building
-
-Requires CMake 3.20+ and a C++20 compiler.
-
-```sh
-cmake -S . -B build
-cmake --build build
-./build/main
-```
-
-`main()` is currently empty, so the binary doesn't do anything yet.
-
 ## TODO
 
-- Ops: subtraction, negation, `exp`, `pow`
+- Ops: negation, `exp`, more activations (ReLU)
 - Split `main.cpp` into `src/value.*` and `src/nn.*`
-- Training example (`examples/xor.cpp`) and grad check tests (`tests/grad_check.cpp`)
+- Move the XOR demo to `examples/xor.cpp` and the grad checks to `tests/grad_check.cpp`
