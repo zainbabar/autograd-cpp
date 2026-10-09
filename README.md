@@ -4,7 +4,7 @@ A small scalar autograd engine and neural net library in C++20, in the spirit of
 [micrograd](https://github.com/karpathy/micrograd). Every number is a `Value` node in a
 computation graph, and calling `backprop` on an output fills in the gradient of every node
 that went into it. On top of that there's a tiny MLP that can be trained with plain gradient descent.
-It trains on XOR, and MNIST is in progress.
+It trains on XOR and MNIST.
 
 The library is header-only, in `src/`:
 - [value.hpp](src/value.hpp): `Value`, the ops, `pow` and `tanh`
@@ -14,7 +14,7 @@ The library is header-only, in `src/`:
 - [data.hpp](src/data.hpp): `Dataset`, `load_csv`, `print_digit`
 
 [tests/grad_check.cpp](tests/grad_check.cpp) checks the gradients, [examples/xor.cpp](examples/xor.cpp) trains an MLP on XOR,
-and [examples/mnist.cpp](examples/mnist.cpp) is the (work in progress) MNIST classifier.
+and [examples/mnist.cpp](examples/mnist.cpp) trains a classifier on MNIST.
 
 ## Building and running
 
@@ -38,8 +38,6 @@ one image per row as `label,pixel0,...,pixel783`:
 pip install scikit-learn
 python load_mnist.py
 ```
-
-Run `mnist` from the repo root, since it currently opens `data/...` relative to the working directory.
 
 `grad_check` runs backprop through a small expression and grad checks every op. `xor` trains
 an MLP on XOR. Output looks something like this (weights are randomly initialised so the
@@ -109,19 +107,45 @@ training numbers change each run):
   Pixels are scaled from 0-255 to [0, 1], a header row is skipped, and `max_rows = 0` reads everything.
 - `print_digit(pixels)`: draws a 28x28 image in the terminal as ASCII, handy for checking an image matches its label.
 
-## MNIST (work in progress)
+## MNIST
 
-[examples/mnist.cpp](examples/mnist.cpp) loads a subset (5000 train, 2000 test images) and builds a 784-16-10 MLP.
-What's done so far:
-- `scale_init`: scales every weight and bias by `1/sqrt(n_inputs)`. With 784 inputs and weights in [-1, 1]
-  the pre-activation sums are huge and `tanh` saturates at ±1, so this keeps them in a usable range.
-- `forward_all`: like `MLP::operator()` but returns all 10 outputs instead of unwrapping a single one.
-- `target_vector(label)`: one-hot style target, `+1` for the true digit and `-1` for the rest (to match `tanh`).
-- `accuracy(model, data)`: forward pass on every image, argmax output is the prediction.
-- `batch_loss` / `train_step`: mean squared error over a minibatch, then zero grads, backprop, and a gradient descent step.
+[examples/mnist.cpp](examples/mnist.cpp) trains a 784-16-10 MLP (tanh everywhere, ±1 targets, squared error)
+with minibatch gradient descent, batch size 32.
 
-Right now `main` runs one forward pass and prints the accuracy of the untrained model (should be around chance, ~10%).
-`train_epochs` is still to do.
+**1. Export the data** (writes `data/mnist_train.csv` and `data/mnist_test.csv`, both gitignored):
+
+```sh
+pip install scikit-learn
+python load_mnist.py
+```
+
+**2. Build in Release mode:**
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+**3. Run** from the repo root. The binary must be run from there, since it opens `data/...` relative to the working directory:
+
+```sh
+./build/mnist <train_rows> <epochs> <lr>   # defaults: 5000 20 0.1, train_rows = 0 loads all 60,000
+```
+
+It prints the config and parameter count, then one line per epoch with the average batch loss,
+accuracy on a 2,000-image test subset, accuracy on the first 1,000 train images, and the epoch time.
+After the last epoch it evaluates the full 10k test set and prints `FINAL test10k <accuracy>`.
+
+[scripts/run_seeds.sh](scripts/run_seeds.sh) runs 5 copies with the default config in parallel
+(logs in `logs/seed_<i>.txt`) and prints the mean and sample std of their `FINAL test10k` values.
+Weight init is random per run; the shuffle seed is fixed.
+
+**Results**
+
+| config | FINAL test10k (mean ± std, 5 runs) | time per epoch |
+|---|---|---|
+| default (5000 20 0.1) | TODO | TODO |
+| full train set (0 20 0.1) | TODO | TODO |
 
 ## Example
 
@@ -149,5 +173,5 @@ for (auto& p : model.parameters()) {
 
 ## TODO
 
-- Finish MNIST: minibatch training loop, then report train/test accuracy
+- MNIST: fill in the results table
 - Ops: negation, `exp`, more activations (ReLU)

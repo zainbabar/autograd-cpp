@@ -1,5 +1,9 @@
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
+#include <string>
 #include <cstddef>
 #include <iostream>
 #include <memory>
@@ -9,6 +13,9 @@
 #include "data.hpp"
 #include "train.hpp"
 #include <cmath>
+#include <numeric>    
+#include <random>    
+#include <algorithm>
 
 using namespace std;
 
@@ -104,6 +111,7 @@ shared_ptr<Value> batch_loss(MLP& model, const Dataset& data, vector<int> indici
     return avg_batch_loss;
 }
 
+// 1 training step for a batch
 void train_step(MLP& model, shared_ptr<Value> batch_loss, double learning_rate) {
     zero_grad(model);
     backprop(batch_loss);
@@ -112,37 +120,84 @@ void train_step(MLP& model, shared_ptr<Value> batch_loss, double learning_rate) 
     }
 }
 
-void train_epochs(MLP& model, const Dataset& data, int epochs, double learning_rate) {
+const int BATCH_SIZE = 32;
 
+// prints accuracies the same way everywhere, including the FINAL line
+string fmt_acc(double acc) {
+    ostringstream out;
+    out << fixed << setprecision(4) << acc;
+    return out.str();
 }
 
+void train_epochs(MLP& model, const Dataset& train, const Dataset& test, const Dataset& train_eval,
+                  int n_epochs, double learning_rate) {
+    vector<int> indicies(train.labels.size()); // create vector w/ all 0s 
+    iota(indicies.begin(), indicies.end(), 0); // fills inidices w consecutive values
+    mt19937 rng(42);
+    for (int epoch = 1; epoch <= n_epochs; ++epoch) {
+        auto epoch_start = chrono::steady_clock::now();
+        // shuffle the data for each epoch so batches r random
+        double epoch_loss = 0;
+        double batches = 0;
+        shuffle(indicies.begin(), indicies.end(), rng);
+        // 1 full pass of the training data, using minibatch gd
+        for (size_t start = 0; start + BATCH_SIZE <= indicies.size(); start += BATCH_SIZE) {
+            ++batches;
+            // create a batch 
+            vector<int> batch_indicies(indicies.begin() + start, indicies.begin() + start + BATCH_SIZE);
+            auto loss = batch_loss(model, train, batch_indicies);
+            // train step for this batch
+            epoch_loss += loss->data;
+            train_step(model, loss, learning_rate);
+        }
+        // avg epoch loss, test acc, train acc, and how long the epoch took (eval included)
+        double avg_epoch_loss = epoch_loss / batches;
+        auto test_acc = accuracy(model, test);
+        auto train_acc = accuracy(model, train_eval);
+        double secs = chrono::duration<double>(chrono::steady_clock::now() - epoch_start).count();
+        cout << "epoch " << epoch << "  loss " << fixed << setprecision(6) << avg_epoch_loss
+             << "  test " << fmt_acc(test_acc) << "  train " << fmt_acc(train_acc)
+             << "  time " << setprecision(1) << secs << "s" << endl;
+    }
+}
 
+// usage: ./build/mnist <train_rows> <epochs> <lr>, train_rows = 0 loads all 60k
+int main(int argc, char** argv) {
+    size_t train_rows = 5000;
+    int epochs = 20;
+    double lr = 0.1;
+    try {
+        if (argc > 1) { train_rows = stoul(argv[1]); }
+        if (argc > 2) { epochs = stoi(argv[2]); }
+        if (argc > 3) { lr = stod(argv[3]); }
+    } catch (const exception&) {
+        cerr << "usage: " << argv[0] << " <train_rows> <epochs> <lr>" << endl;
+        return 1;
+    }
 
-int main() {
-    Dataset train = load_csv("data/mnist_train.csv", 5000);
+    Dataset train = load_csv("data/mnist_train.csv", train_rows);
     Dataset test = load_csv("data/mnist_test.csv", 2000);
-    cout << "train: " << train.labels.size() << " rows, " << train.pixels[0].size() << " pixels each\n";
-    cout << "test:  " << test.labels.size() << " rows\n";
-
-    // vector<int> counts(10, 0);
-    // for (int y : train.labels) { ++counts[y]; }
-    // for (int d = 0; d < 10; ++d) { cout << "digit " << d << ": " << counts[d] << "\n"; }
-
-    // cout << "first train image, label " << train.labels[0] << ":\n";
-    // print_digit(train.pixels[0]);
+    // fixed set of the first 1000 train images to track train accuracy on
+    Dataset train_eval = load_csv("data/mnist_train.csv", 1000);
+    if (train.labels.size() < BATCH_SIZE) {
+        cerr << "need at least " << BATCH_SIZE << " train rows" << endl;
+        return 1;
+    }
 
     MLP model(784, {16, 10});
-    // cout << layer_max(model.layers[0]) << endl;
-    // cout << layer_max(model.layers[1]) << endl;
     scale_init(model);
-    // cout << layer_max(model.layers[0]) << endl;
-    // cout << layer_max(model.layers[1]) << endl;
 
-    auto inputs = to_nodes(train.pixels[0]);
-    auto outputs = forward_all(model, inputs);
-    for (auto& out : outputs) {
-        cout << out->data << " ";
-    }
-    cout << endl;
-    cout << accuracy(model, train) << endl;
+    // loss on the first batch before any training, so there's something to compare epoch losses against
+    vector<int> first_batch(BATCH_SIZE);
+    iota(first_batch.begin(), first_batch.end(), 0);
+    double initial_loss = batch_loss(model, train, first_batch)->data;
+
+    cout << "train_rows " << train.labels.size() << "  epochs " << epochs << "  lr " << lr
+         << "  batch_size " << BATCH_SIZE << "  params " << model.parameters().size() << endl;
+    cout << "initial loss " << fixed << setprecision(6) << initial_loss << endl;
+
+    train_epochs(model, train, test, train_eval, epochs, lr);
+
+    Dataset test_full = load_csv("data/mnist_test.csv");
+    cout << "FINAL test10k " << fmt_acc(accuracy(model, test_full)) << endl;
 }
