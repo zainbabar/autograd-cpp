@@ -4,14 +4,17 @@ A small scalar autograd engine and neural net library in C++20, in the spirit of
 [micrograd](https://github.com/karpathy/micrograd). Every number is a `Value` node in a
 computation graph, and calling `backprop` on an output fills in the gradient of every node
 that went into it. On top of that there's a tiny MLP that can be trained with plain gradient descent.
+It trains on XOR, and MNIST is in progress.
 
 The library is header-only, in `src/`:
 - [value.hpp](src/value.hpp): `Value`, the ops, `pow` and `tanh`
 - [autograd.hpp](src/autograd.hpp): topological sort (`build`) and `backprop`
 - [nn.hpp](src/nn.hpp): `Neuron`, `Layer`, `MLP`
-- [train.hpp](src/train.hpp): `loss`, `zero_grad`, `train`
+- [train.hpp](src/train.hpp): `to_nodes`, `loss`, `zero_grad`, `train`
+- [data.hpp](src/data.hpp): `Dataset`, `load_csv`, `print_digit`
 
-[tests/grad_check.cpp](tests/grad_check.cpp) checks the gradients, and [examples/xor.cpp](examples/xor.cpp) trains an MLP on XOR.
+[tests/grad_check.cpp](tests/grad_check.cpp) checks the gradients, [examples/xor.cpp](examples/xor.cpp) trains an MLP on XOR,
+and [examples/mnist.cpp](examples/mnist.cpp) is the (work in progress) MNIST classifier.
 
 ## Building and running
 
@@ -22,7 +25,21 @@ cmake -S . -B build
 cmake --build build
 ./build/grad_check
 ./build/xor
+./build/mnist
 ```
+
+The build defaults to `Release`, since scalar autograd on MNIST is painfully slow without optimizations.
+
+`mnist` needs the dataset as CSVs in `data/` (gitignored). [load_mnist.py](load_mnist.py) downloads it
+from OpenML with scikit-learn and writes `data/mnist_train.csv` (60k rows) and `data/mnist_test.csv` (10k rows),
+one image per row as `label,pixel0,...,pixel783`:
+
+```sh
+pip install scikit-learn
+python load_mnist.py
+```
+
+Run `mnist` from the repo root, since it currently opens `data/...` relative to the working directory.
 
 `grad_check` runs backprop through a small expression and grad checks every op. `xor` trains
 an MLP on XOR. Output looks something like this (weights are randomly initialised so the
@@ -85,6 +102,26 @@ training numbers change each run):
 - `loss(model, data, targets)`: sum of squared errors over the whole dataset, as one graph.
 - `zero_grad(model)`: resets every parameter's grad to 0.
 - `train(model, data, targets, epochs, lr, log_every)`: full-batch gradient descent, prints the loss every `log_every` epochs.
+- `to_nodes(row)`: wraps a row of plain `double`s in fresh leaf `Value`s for a forward pass.
+
+**Data**
+- `load_csv(path, max_rows)`: reads a `label,pixels...` CSV into a `Dataset` (`pixels` and `labels`, matched by index).
+  Pixels are scaled from 0-255 to [0, 1], a header row is skipped, and `max_rows = 0` reads everything.
+- `print_digit(pixels)`: draws a 28x28 image in the terminal as ASCII, handy for checking an image matches its label.
+
+## MNIST (work in progress)
+
+[examples/mnist.cpp](examples/mnist.cpp) loads a subset (5000 train, 2000 test images) and builds a 784-16-10 MLP.
+What's done so far:
+- `scale_init`: scales every weight and bias by `1/sqrt(n_inputs)`. With 784 inputs and weights in [-1, 1]
+  the pre-activation sums are huge and `tanh` saturates at ±1, so this keeps them in a usable range.
+- `forward_all`: like `MLP::operator()` but returns all 10 outputs instead of unwrapping a single one.
+- `target_vector(label)`: one-hot style target, `+1` for the true digit and `-1` for the rest (to match `tanh`).
+- `accuracy(model, data)`: forward pass on every image, argmax output is the prediction.
+- `batch_loss` / `train_step`: mean squared error over a minibatch, then zero grads, backprop, and a gradient descent step.
+
+Right now `main` runs one forward pass and prints the accuracy of the untrained model (should be around chance, ~10%).
+`train_epochs` is still to do.
 
 ## Example
 
@@ -112,4 +149,5 @@ for (auto& p : model.parameters()) {
 
 ## TODO
 
+- Finish MNIST: minibatch training loop, then report train/test accuracy
 - Ops: negation, `exp`, more activations (ReLU)

@@ -91,13 +91,11 @@ double accuracy(MLP& model, const Dataset& data) {
 // takes indicies of batch, returns a VALUE batch loss so we can backprop
 shared_ptr<Value> batch_loss(MLP& model, const Dataset& data, vector<int> indicies) {
     shared_ptr<Value> total = make_shared<Value>(0); // value, keeps trakc of nodes
-    int start = indicies[0];
-    int end = indicies[indicies.size() - 1];
-    for (int i = start; i <= end; ++i) {
+    for (int i : indicies) {
         auto preds = forward_all(model, to_nodes(data.pixels[i]));
         auto targs = target_vector(data.labels[i]);
         // preds and targets both vector 10 long, so we can compute an actual loss now 
-        for (int j = 0; j < preds.size(); ++i) {
+        for (int j = 0; j < preds.size(); ++j) {
             // squared error for each output  
             total = total + pow((preds[j] - targs[j]), 2.0);
         }
@@ -115,7 +113,7 @@ void train_step(MLP& model, shared_ptr<Value> batch_loss, double learning_rate) 
 }
 
 void train_epochs(MLP& model, const Dataset& data, int epochs, double learning_rate) {
-    
+
 }
 
 
