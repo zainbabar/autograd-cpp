@@ -19,6 +19,11 @@
 
 using namespace std;
 
+// set by CMake to the absolute path of data/, so the binary works from any directory
+#ifndef DATA_DIR
+#define DATA_DIR "data"
+#endif
+
 // Neuron inits weights and bias uniform in [-1, 1], which is fine for xor's 2 inputs but not for 784.
 // the pre activation sum adds up 784 random terms, so its variance grows w/ the number of inputs
 // and tanh gets pushed way out to +-1 where its grad is basically 0, so nothing learns.
@@ -180,8 +185,7 @@ void train_epochs(MLP& model, const Dataset& train, const Dataset& test, const D
     }
 }
 
-// usage: ./build/mnist <train_rows> <epochs> <lr>, train_rows = 0 loads all 60k.
-// has to be run from the repo root, the csv paths are relative to the working directory
+// usage: ./build/mnist <train_rows> <epochs> <lr>, train_rows = 0 loads all 60k
 int main(int argc, char** argv) {
     // defaults if args r left out. 5000 rows instead of all 60k since scalar autograd is slow
     size_t train_rows = 5000;
@@ -197,13 +201,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    Dataset train = load_csv("data/mnist_train.csv", train_rows);
+    Dataset train = load_csv(DATA_DIR "/mnist_train.csv", train_rows);
     // per epoch test acc only uses 2k of the 10k test images to keep each epoch fast,
     // the full 10k only gets used once at the very end
-    Dataset test = load_csv("data/mnist_test.csv", 2000);
+    Dataset test = load_csv(DATA_DIR "/mnist_test.csv", 2000);
     // train acc is always on the first 1000 rows of the train csv, so it's the same set every epoch.
     // loaded separately from train, so if train_rows < 1000 some of these were never trained on
-    Dataset train_eval = load_csv("data/mnist_train.csv", 1000);
+    Dataset train_eval = load_csv(DATA_DIR "/mnist_train.csv", 1000);
     // need at least one full batch, otherwise the epoch loop never runs and avg loss would be 0/0
     if (train.labels.size() < BATCH_SIZE) {
         cerr << "need at least " << BATCH_SIZE << " train rows" << endl;
@@ -227,6 +231,6 @@ int main(int argc, char** argv) {
     train_epochs(model, train, test, train_eval, epochs, lr);
 
     // final score on the whole 10k test set, run_seeds.sh greps for this exact "FINAL test10k" line
-    Dataset test_full = load_csv("data/mnist_test.csv");
+    Dataset test_full = load_csv(DATA_DIR "/mnist_test.csv");
     cout << "FINAL test10k " << fmt_acc(accuracy(model, test_full)) << endl;
 }
