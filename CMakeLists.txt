@@ -3,6 +3,13 @@ project(autograd_cpp CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# default to an optimized build, scalar autograd on mnist is painfully slow without it
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
 include_directories(src)
 add_executable(grad_check tests/grad_check.cpp)
 add_executable(xor examples/xor.cpp)
+add_executable(mnist examples/mnist.cpp)
+# absolute path to data/ so the binary finds the csvs no matter where it's run from
+target_compile_definitions(mnist PRIVATE DATA_DIR="${CMAKE_SOURCE_DIR}/data")

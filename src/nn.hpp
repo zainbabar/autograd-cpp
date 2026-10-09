@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "value.hpp"
+#include "autograd.hpp"
 
 class Neuron {
   public:
